@@ -172,7 +172,6 @@ def set_cell_safe(ws, row, col, value):
 def build_prev_so_dict(prev_so_file_obj):
     """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO + Status secara presisi."""
     try:
-        # Gunakan Pandas sebagai engine pembaca agar tahan dari corrupt XML openpyxl
         df_raw = pd.read_excel(prev_so_file_obj, sheet_name="Worksheet", header=None)
     except Exception:
         prev_so_file_obj.seek(0)
@@ -182,7 +181,7 @@ def build_prev_so_dict(prev_so_file_obj):
     header_idx = None
     for idx, r in df_raw.iterrows():
         row_str_vals = [str(v).strip().upper() for v in r.values if pd.notna(v)]
-        if "BATCH" in row_str_vals and ("RESULT" in row_str_vals or "STATUS" in row_str_vals):
+        if "BATCH" in row_str_vals and ("RESULT" in row_str_vals or "STATUS" in row_str_vals or "PREV SO" in row_str_vals):
             header_idx = idx
             break
 
@@ -204,8 +203,14 @@ def build_prev_so_dict(prev_so_file_obj):
                 if batch_key.endswith(".0"):
                     batch_key = batch_key[:-2]
 
-                res_val = row.get("RESULT") if pd.notna(row.get("RESULT")) else None
-                stat_val = row.get("STATUS") if pd.notna(row.get("STATUS")) else None
+                # --- PENYESUAIAN REVISI PLACEMENT ---
+                # Prev SO diisi dari kolom STATUS / RESULT pada file Prev SO
+                # Prev Status diisi dari kolom PREV STATUS / CORRECTIVE ACTION pada file Prev SO
+                res_val = row.get("STATUS") if pd.notna(row.get("STATUS")) else row.get("RESULT")
+                if pd.isna(res_val):
+                    res_val = row.get("PREV SO") if pd.notna(row.get("PREV SO")) else None
+
+                stat_val = row.get("PREV STATUS") if pd.notna(row.get("PREV STATUS")) else row.get("CORRECTIVE ACTION")
 
                 prev_dict[batch_key] = {
                     "prev_so": res_val,
@@ -227,6 +232,19 @@ if st.button("🚀 Process & Generate Template", type="primary"):
             for sname in ["Sheet1", "Sheet2", "sheet1", "sheet2"]:
                 if sname in wb.sheetnames:
                     del wb[sname]
+
+            # -----------------------------------------------------
+            # SORTING DATA MENTAH (LOC -> BIN -> PN -> SN) A-Z
+            # -----------------------------------------------------
+            # Cari kolom untuk sorting
+            loc_col = next((c for c in df_raw.columns if c in ["LOCATION", "LOC"]), None)
+            bin_col = next((c for c in df_raw.columns if c == "BIN"), None)
+            pn_col = next((c for c in df_raw.columns if c in ["PN", "PART NO", "PART_NO"]), None)
+            sn_col = next((c for c in df_raw.columns if c in ["SN", "SERIAL NO", "SERIAL_NO"]), None)
+
+            sort_keys = [c for c in [loc_col, bin_col, pn_col, sn_col] if c is not None]
+            if sort_keys:
+                df_raw = df_raw.sort_values(by=sort_keys, ascending=True).reset_index(drop=True)
 
             # -----------------------------------------------------
             # UPDATE SHEET WORKSHEET
@@ -280,7 +298,7 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     # --- FORMULA EXCEL DINAMIS ---
                     set_cell_safe(ws, row_idx, 21, f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}")  # U: Qty eMRO
                     
-                    # ⚠️ QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG) SESUAI REQUEST
+                    # QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG)
                     set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual (BLANK)
                     
                     set_cell_safe(ws, row_idx, 23, f"=V{row_idx}-U{row_idx}")  # W: Diff
