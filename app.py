@@ -30,9 +30,9 @@ with col1:
 
 with col2:
     csv_file = st.file_uploader(
-        "Upload Data Mentah Inventory (.csv)",
-        type=["csv"],
-        help="Report inventory baru (bisa separator koma atau titik koma).",
+        "Upload Data Mentah Inventory (.csv / .xlsx)",
+        type=["csv", "xlsx", "xls"],
+        help="Report inventory baru (bisa format CSV atau Excel).",
     )
 
 with col3:
@@ -129,22 +129,40 @@ for idx, row in enumerate(st.session_state.summary_rows):
 st.divider()
 
 # ---------------------------------------------------------
-# STEP 3: PROSES PEMPROSESAN DATA
+# STEP 3: HELPER FUNCTIONS & EXEKUSI
 # ---------------------------------------------------------
 st.header("3. Eksekusi & Pemrosesan")
 
 
-def load_csv_data(uploaded_csv):
-    """Membaca CSV baik dengan pemisah koma (,) atau titik koma (;)."""
-    try:
-        df = pd.read_csv(uploaded_csv, sep=";")
-        if df.shape[1] <= 1:
-            uploaded_csv.seek(0)
-            df = pd.read_csv(uploaded_csv, sep=",")
-    except Exception:
-        uploaded_csv.seek(0)
-        df = pd.read_csv(uploaded_csv, sep=",")
+def load_raw_inventory_data(uploaded_file_obj):
+    """Membaca file data mentah baik berupa Excel (.xlsx/.xls) maupun CSV (pembatas ; atau ,)."""
+    fname = uploaded_file_obj.name.lower()
+    if fname.endswith(".xlsx") or fname.endswith(".xls"):
+        df = pd.read_excel(uploaded_file_obj)
+    else:
+        try:
+            df = pd.read_csv(uploaded_file_obj, sep=";")
+            if df.shape[1] <= 1:
+                uploaded_file_obj.seek(0)
+                df = pd.read_csv(uploaded_file_obj, sep=",")
+        except Exception:
+            uploaded_file_obj.seek(0)
+            df = pd.read_csv(uploaded_file_obj, sep=",")
+
+    # Clean & normalize column names to UPPERCASE
+    df.columns = df.columns.astype(str).str.strip().str.upper()
     return df
+
+
+def get_val(row, *possible_keys, default=None):
+    """Helper untuk mengambil data secara Case-Insensitive & fleksibel dari dictionary baris."""
+    for key in possible_keys:
+        k_upper = key.strip().upper()
+        if k_upper in row and pd.notna(row[k_upper]):
+            val = row[k_upper]
+            # Jika numerik, coba kembalikan int/float, bukan NaN
+            return val
+    return default
 
 
 def build_prev_so_dict(prev_so_file_obj):
@@ -155,10 +173,10 @@ def build_prev_so_dict(prev_so_file_obj):
     if "Worksheet" in prev_wb.sheetnames:
         ws_prev = prev_wb["Worksheet"]
 
-        # Mencari letak header 'Batch', 'Result', 'Status' di sheet Prev SO
         batch_col, result_col, status_col = None, None, None
+        header_row = 7
 
-        # Cek baris 5 sd 7 untuk menemukan header
+        # Mencari letak header 'Batch', 'Result', 'Status' di sheet Prev SO
         for r in range(1, 10):
             for c in range(1, 40):
                 val = str(ws_prev.cell(r, c).value or "").strip().lower()
@@ -174,9 +192,7 @@ def build_prev_so_dict(prev_so_file_obj):
                 break
 
         if batch_col:
-            # Mengambil data dari baris setelah header
-            start_r = (header_row + 1) if "header_row" in locals() else 8
-            for r in range(start_r, ws_prev.max_row + 1):
+            for r in range(header_row + 1, ws_prev.max_row + 1):
                 batch_val = ws_prev.cell(r, batch_col).value
                 if batch_val is not None and str(batch_val).strip() != "":
                     batch_key = str(batch_val).strip()
@@ -204,17 +220,16 @@ if st.button("🚀 Process & Generate Template", type="primary"):
         )
     else:
         with st.spinner("Sedang memproses data dan merapikan Excel..."):
-            # 1. Load Workbook & CSV
             wb = openpyxl.load_workbook(template_file)
-            df_raw = load_csv_data(csv_file)
+            df_raw = load_raw_inventory_data(csv_file)
             prev_so_map = build_prev_so_dict(prev_so_file)
 
-            # 2. Hapus Sheet1 dan Sheet2
+            # Hapus Sheet1 & Sheet2 jika ada
             for sname in ["Sheet1", "Sheet2", "sheet1", "sheet2"]:
                 if sname in wb.sheetnames:
                     del wb[sname]
 
-            # 3. Update Sheet Worksheet
+            # Update Sheet Worksheet
             if "Worksheet" in wb.sheetnames:
                 ws = wb["Worksheet"]
 
@@ -228,195 +243,211 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                 if max_r >= 8:
                     ws.delete_rows(8, amount=max_r - 7 + 1)
 
-                # Pemetaan kolom CSV ke kolom Excel Worksheet (Baris 8+)
-                # Kolom A=1, B=2, dst.
+                # Isi data mentah baru mulai dari baris ke-8
                 for idx, row_data in df_raw.iterrows():
                     row_idx = 8 + idx
 
-                    # Data dari CSV (menyesuaikan nama header standar CSV report inventory)
-                    batch_num = (
-                        str(
-                            row_data.get("Batch")
-                            or row_data.get("BATCH")
-                            or ""
+                    batch_num = str(
+                        get_val(
+                            row_data, "BATCH", "BATCH NO", "BATCH_NO", default=""
                         )
-                        .strip()
-                    )
+                    ).strip()
 
-                    ws.cell(row_idx, 1, idx + 1)  # No
+                    ws.cell(row_idx, 1, idx + 1)  # A: No
                     ws.cell(
                         row_idx,
                         2,
-                        row_data.get("Count No")
-                        or row_data.get("COUNT_NO")
-                        or "",
-                    )  # Count No
+                        get_val(row_data, "COUNT NO", "COUNT_NO", default=""),
+                    )  # B: Count No
                     ws.cell(
                         row_idx,
                         3,
-                        row_data.get("LOC") or row_data.get("LOCATION") or "",
-                    )  # LOC
+                        get_val(row_data, "LOCATION", "LOC", default=""),
+                    )  # C: LOC
                     ws.cell(
-                        row_idx, 4, row_data.get("BIN") or ""
-                    )  # BIN
+                        row_idx, 4, get_val(row_data, "BIN", default="")
+                    )  # D: BIN
                     ws.cell(
                         row_idx,
                         5,
-                        row_data.get("GRB") or row_data.get("GRB_NO") or "",
-                    )  # GRB
-                    ws.cell(row_idx, 6, batch_num)  # Batch
+                        get_val(row_data, "GRB", "GRB NO", "GRB_NO", default=""),
+                    )  # E: GRB
+                    ws.cell(row_idx, 6, batch_num)  # F: Batch
                     ws.cell(
                         row_idx,
                         7,
-                        row_data.get("PN") or row_data.get("PART_NO") or "",
-                    )  # PN
+                        get_val(
+                            row_data, "PN", "PART NO", "PART_NO", default=""
+                        ),
+                    )  # G: PN
                     ws.cell(
                         row_idx,
                         8,
-                        row_data.get("SN") or row_data.get("SERIAL_NO") or "",
-                    )  # SN
+                        get_val(
+                            row_data, "SN", "SERIAL NO", "SERIAL_NO", default=""
+                        ),
+                    )  # H: SN
                     ws.cell(
                         row_idx,
                         9,
-                        row_data.get("PN Description")
-                        or row_data.get("DESCRIPTION")
-                        or "",
-                    )  # PN Description
+                        get_val(
+                            row_data,
+                            "PN DESCRIPTION",
+                            "DESCRIPTION",
+                            "PN DESC",
+                            default="",
+                        ),
+                    )  # I: PN Description
+
+                    # QTY Columns (10-15)
                     ws.cell(
                         row_idx,
                         10,
-                        row_data.get("QTY Available")
-                        or row_data.get("QTY_AVAIL")
-                        or 0,
-                    )  # QTY Available
+                        get_val(
+                            row_data,
+                            "QTY AVAILABLE",
+                            "QTY_AVAIL",
+                            "QTY AVAIL",
+                            default=0,
+                        ),
+                    )  # J
                     ws.cell(
                         row_idx,
                         11,
-                        row_data.get("QTY Reserved")
-                        or row_data.get("QTY_RESV")
-                        or 0,
-                    )  # QTY Reserved
+                        get_val(
+                            row_data,
+                            "QTY RESERVED",
+                            "QTY_RESV",
+                            "QTY RESV",
+                            default=0,
+                        ),
+                    )  # K
                     ws.cell(
                         row_idx,
                         12,
-                        row_data.get("QTY In Transfer")
-                        or row_data.get("QTY_TRANS")
-                        or 0,
-                    )  # QTY In Transfer
+                        get_val(
+                            row_data,
+                            "QTY IN TRANSFER",
+                            "QTY_TRANS",
+                            "QTY TRANS",
+                            default=0,
+                        ),
+                    )  # L
                     ws.cell(
                         row_idx,
                         13,
-                        row_data.get("QTY Pending R/I")
-                        or row_data.get("QTY_PENDING")
-                        or 0,
-                    )  # QTY Pending R/I
+                        get_val(
+                            row_data,
+                            "QTY PENDING RI",
+                            "QTY PENDING R/I",
+                            "QTY_PENDING",
+                            default=0,
+                        ),
+                    )  # M
                     ws.cell(
                         row_idx,
                         14,
-                        row_data.get("QTY US")
-                        or row_data.get("QTY_US")
-                        or 0,
-                    )  # QTY US
+                        get_val(row_data, "QTY US", "QTY_US", default=0),
+                    )  # N
                     ws.cell(
                         row_idx,
                         15,
-                        row_data.get("QTY In Repair")
-                        or row_data.get("QTY_REPAIR")
-                        or 0,
-                    )  # QTY In Repair
+                        get_val(
+                            row_data,
+                            "QTY IN REPAIR",
+                            "QTY_REPAIR",
+                            "QTY REPAIR",
+                            default=0,
+                        ),
+                    )  # O
+
                     ws.cell(
                         row_idx,
                         16,
-                        row_data.get("Shelf Life Exp") or "",
-                    )  # Shelf Life Exp
+                        get_val(
+                            row_data,
+                            "SHELF LIFE EXPIRATION",
+                            "SHELF LIFE EXP",
+                            "TOOL LIFE EXPIRATION",
+                            default="",
+                        ),
+                    )  # P: Shelf Life Exp
                     ws.cell(
                         row_idx,
                         17,
-                        row_data.get("Condition") or "SV",
-                    )  # Condition
+                        get_val(row_data, "CONDITION", default="SV"),
+                    )  # Q: Condition
                     ws.cell(
-                        row_idx,
-                        18,
-                        row_data.get("Category") or "",
-                    )  # Category
+                        row_idx, 18, get_val(row_data, "CATEGORY", default="")
+                    )  # R: Category
                     ws.cell(
-                        row_idx,
-                        19,
-                        row_data.get("Owner") or "",
-                    )  # Owner
+                        row_idx, 19, get_val(row_data, "OWNER", default="")
+                    )  # S: Owner
                     ws.cell(
-                        row_idx,
-                        20,
-                        row_data.get("UOM") or "EA",
-                    )  # UOM
+                        row_idx, 20, get_val(row_data, "UOM", default="EA")
+                    )  # T: UOM
 
                     # --- FORMULA EXCEL DINAMIS ---
-                    # Col U (21): Qty eMRO
                     ws.cell(
                         row_idx,
                         21,
                         f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}",
-                    )
-                    # Col V (22): Qty Actual
-                    ws.cell(row_idx, 22, f"=U{row_idx}")
-                    # Col W (23): Diff
-                    ws.cell(row_idx, 23, f"=V{row_idx}-U{row_idx}")
-                    # Col X (24): Result
+                    )  # U: Qty eMRO
+                    ws.cell(row_idx, 22, f"=U{row_idx}")  # V: Qty Actual
+                    ws.cell(
+                        row_idx, 23, f"=V{row_idx}-U{row_idx}"
+                    )  # W: Diff
                     ws.cell(
                         row_idx,
                         24,
                         f'=IF(U{row_idx}=0,"BUG EMRO??/MISSING??",IF(V{row_idx}=0,"NOT FOUND",IF(V{row_idx}>U{row_idx},"SURPLUS",IF(V{row_idx}<U{row_idx},"MINUS","MATCHED"))))',
-                    )
-                    # Col Y (25): Status
+                    )  # X: Result
                     ws.cell(
                         row_idx,
                         25,
                         f'=IF(X{row_idx}="MATCHED","MATCHED","OPEN")',
-                    )
+                    )  # Y: Status
 
-                    # Col Z (26) Date, AA (27) Auditor, AB (28) Remark, AC (29) Penyelesaian, AD (30) Corrective Action -> Dikosongkan
-                    ws.cell(row_idx, 26, None)
-                    ws.cell(row_idx, 27, None)
-                    ws.cell(row_idx, 28, None)
-                    ws.cell(row_idx, 29, None)
-                    ws.cell(row_idx, 30, None)
+                    # Dikosongkan
+                    ws.cell(row_idx, 26, None)  # Z: Date
+                    ws.cell(row_idx, 27, None)  # AA: Auditor
+                    ws.cell(row_idx, 28, None)  # AB: Remark
+                    ws.cell(row_idx, 29, None)  # AC: Penyelesaian
+                    ws.cell(row_idx, 30, None)  # AD: Corrective Action
 
                     # --- PENUKARAN KOLOM PREV SO & PREV STATUS ---
-                    # Col AE (31): Prev SO (Hasil VLOOKUP Result Prev SO)
-                    # Col AG (33): Prev Status (Hasil VLOOKUP Status Prev SO)
                     prev_info = prev_so_map.get(
                         batch_num, {"prev_so": None, "prev_status": None}
                     )
-                    ws.cell(row_idx, 31, prev_info["prev_so"])  # AE = Prev SO
+                    ws.cell(
+                        row_idx, 31, prev_info["prev_so"]
+                    )  # AE: Prev SO
                     ws.cell(
                         row_idx,
                         32,
-                        row_data.get("CAT") or row_data.get("Category") or "",
-                    )  # AF = CAT
+                        get_val(row_data, "CAT", "CATEGORY", default=""),
+                    )  # AF: CAT
                     ws.cell(
                         row_idx, 33, prev_info["prev_status"]
-                    )  # AG = Prev Status
-                    ws.cell(row_idx, 34, None)  # AH = Reason (Dikosongkan)
+                    )  # AG: Prev Status
+                    ws.cell(row_idx, 34, None)  # AH: Reason (Dikosongkan)
 
-            # 4. Update Sheet Summary
+            # Update Sheet Summary
             if "Summary" in wb.sheetnames:
                 ws_sum = wb["Summary"]
                 ws_sum["D2"] = f": {station_input}"
                 ws_sum["D3"] = f": {periode_input}"
 
-                # Masukkan data baris lokasi
                 start_sum_row = 9
                 for i, sdata in enumerate(summary_data_inputs):
                     r_curr = start_sum_row + i
-                    ws_sum.cell(r_curr, 2, i + 1)  # NO
-                    ws_sum.cell(r_curr, 3, sdata["division"])  # DIVISION
-                    ws_sum.cell(r_curr, 4, sdata["pic"])  # PIC
-                    ws_sum.cell(r_curr, 5, sdata["loc_code"])  # LOC CODE
-                    ws_sum.cell(
-                        r_curr, 6, sdata["loc_desc"]
-                    )  # LOCATION DESCRIPTION
+                    ws_sum.cell(r_curr, 2, i + 1)
+                    ws_sum.cell(r_curr, 3, sdata["division"])
+                    ws_sum.cell(r_curr, 4, sdata["pic"])
+                    ws_sum.cell(r_curr, 5, sdata["loc_code"])
+                    ws_sum.cell(r_curr, 6, sdata["loc_desc"])
 
-            # Simpan output ke memory buffer
+            # Save ke memory buffer untuk didownload
             output_buffer = io.BytesIO()
             wb.save(output_buffer)
             output_buffer.seek(0)
