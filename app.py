@@ -1,4 +1,5 @@
 import io
+import csv
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -129,23 +130,36 @@ st.header("3. Eksekusi & Pemrosesan")
 
 
 def load_raw_inventory_data(uploaded_file_obj):
-    """Membaca file data mentah inventory & mengurutkannya A-Z (LOC -> BIN -> PN -> SN)."""
+    """Membaca file data mentah inventory, menangani CSV tersembunyi di Excel, & melakukan sorting A-Z."""
     fname = uploaded_file_obj.name.lower()
+    df = None
+
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
-        df = pd.read_excel(uploaded_file_obj)
-    else:
         try:
-            df = pd.read_csv(uploaded_file_obj, sep=";")
-            if df.shape[1] <= 1:
+            df = pd.read_excel(uploaded_file_obj)
+            # CEK: Jika Excel hanya berisi 1-2 kolom gabungan teks bercampur titik koma (;)
+            if df.shape[1] <= 2:
                 uploaded_file_obj.seek(0)
-                df = pd.read_csv(uploaded_file_obj, sep=",")
+                df_temp = pd.read_excel(uploaded_file_obj)
+                non_null_series = df_temp.dropna(how='all').iloc[:, 0].astype(str)
+                text_data = "\n".join(non_null_series)
+                df = pd.read_csv(io.StringIO(text_data), sep=";", quoting=csv.QUOTE_MINIMAL, on_bad_lines='skip')
         except Exception:
             uploaded_file_obj.seek(0)
-            df = pd.read_csv(uploaded_file_obj, sep=",")
+            df = pd.read_excel(uploaded_file_obj)
+    else:
+        try:
+            df = pd.read_csv(uploaded_file_obj, sep=";", on_bad_lines='skip')
+            if df.shape[1] <= 1:
+                uploaded_file_obj.seek(0)
+                df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
+        except Exception:
+            uploaded_file_obj.seek(0)
+            df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
 
     df.columns = df.columns.astype(str).str.strip().str.upper()
 
-    # --- PENAMBAHAN FITUR SORTING A-Z (LOC -> BIN -> PN -> SN) ---
+    # --- FITUR SORTING A-Z (LOC -> BIN -> PN -> SN) ---
     sort_cols = []
     for col in ["LOCATION", "LOC", "BIN", "PN", "PART NO", "PART_NO", "SN", "SERIAL NO", "SERIAL_NO"]:
         if col in df.columns and col not in sort_cols:
@@ -182,7 +196,6 @@ def set_cell_safe(ws, row, col, value):
 def build_prev_so_dict(prev_so_file_obj):
     """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO + Status secara presisi."""
     try:
-        # Gunakan Pandas sebagai engine pembaca agar tahan dari corrupt XML openpyxl
         df_raw = pd.read_excel(prev_so_file_obj, sheet_name="Worksheet", header=None)
     except Exception:
         prev_so_file_obj.seek(0)
@@ -290,7 +303,7 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     # --- FORMULA EXCEL DINAMIS ---
                     set_cell_safe(ws, row_idx, 21, f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}")  # U: Qty eMRO
                     
-                    # ⚠️ QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG) SESUAI REQUEST
+                    # QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG)
                     set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual (BLANK)
                     
                     set_cell_safe(ws, row_idx, 23, f"=V{row_idx}-U{row_idx}")  # W: Diff
