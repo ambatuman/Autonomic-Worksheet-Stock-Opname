@@ -1,4 +1,5 @@
 import io
+import csv
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -141,23 +142,36 @@ def clean_batch_str(val):
 def load_raw_inventory_data(uploaded_file_obj):
     """Membaca file data mentah inventory & melakukan sorting lokasi/BIN."""
     fname = uploaded_file_obj.name.lower()
+    df = None
+
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
-        df = pd.read_excel(uploaded_file_obj)
-    else:
         try:
-            df = pd.read_csv(uploaded_file_obj, sep=";")
-            if df.shape[1] <= 1:
+            df = pd.read_excel(uploaded_file_obj)
+            # Menangani kondisi CSV dengan separator ';' yang disimpan sebagai file .xlsx
+            if df.shape[1] <= 2:
                 uploaded_file_obj.seek(0)
-                df = pd.read_csv(uploaded_file_obj, sep=",")
+                df_temp = pd.read_excel(uploaded_file_obj)
+                non_null_series = df_temp.dropna(how='all').iloc[:, 0].astype(str)
+                text_data = "\n".join(non_null_series)
+                df = pd.read_csv(io.StringIO(text_data), sep=";", quoting=csv.QUOTE_MINIMAL, on_bad_lines='skip')
         except Exception:
             uploaded_file_obj.seek(0)
-            df = pd.read_csv(uploaded_file_obj, sep=",")
+            df = pd.read_excel(uploaded_file_obj)
+    else:
+        try:
+            df = pd.read_csv(uploaded_file_obj, sep=";", on_bad_lines='skip')
+            if df.shape[1] <= 1:
+                uploaded_file_obj.seek(0)
+                df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
+        except Exception:
+            uploaded_file_obj.seek(0)
+            df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
 
     df.columns = df.columns.astype(str).str.strip().str.upper()
 
-    # --- FITUR SORTING ---
+    # --- FITUR SORTING (LOC -> BIN -> PN -> SN -> BATCH) A-Z ---
     sort_cols = []
-    for col in ["LOCATION", "LOC", "BIN", "PART NO", "PN", "BATCH", "BATCH NO"]:
+    for col in ["LOCATION", "LOC", "BIN", "PART NO", "PN", "SERIAL NO", "SN", "BATCH", "BATCH NO"]:
         if col in df.columns and col not in sort_cols:
             sort_cols.append(col)
     
@@ -197,7 +211,6 @@ def build_prev_so_dict(prev_so_file_obj):
         prev_so_file_obj.seek(0)
         df_raw = pd.read_excel(prev_so_file_obj, header=None)
 
-    # Deteksi baris header secara fleksibel
     header_idx = None
     for idx, r in df_raw.iterrows():
         row_str_vals = [str(v).strip().upper() for v in r.values if pd.notna(v)]
@@ -216,10 +229,9 @@ def build_prev_so_dict(prev_so_file_obj):
 
         df_prev.columns = [str(c).strip().upper() for c in df_prev.columns]
 
-        # Identifikasi kolom target untuk Prev SO & Prev Status
         batch_col = next((c for c in df_prev.columns if "BATCH" in c), None)
         so_col = next((c for c in df_prev.columns if any(k in c for k in ["RESULT", "PREV SO", "SO", "RESULT PREV"])), None)
-        status_col = next((c for c in df_prev.columns if any(k in c for k in ["STATUS", "PREV STATUS", "STATUS PREV"])), None)
+        status_col = next((c for c in df_prev.columns if any(k in c for k in ["STATUS", "PREV STATUS", "STATUS PREV", "CORRECTIVE ACTION"])), None)
 
         if batch_col:
             for _, row in df_prev.iterrows():
@@ -260,10 +272,14 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                 set_cell_safe(ws, 4, 3, f": {location_input}")
                 set_cell_safe(ws, 5, 3, f": {periode_input}")
 
-                # Hapus isi baris lama dari baris 8 ke bawah
-                max_r = ws.max_row
-                if max_r >= 8:
-                    ws.delete_rows(8, amount=max_r - 7 + 1)
+                # Bersihkan nilai baris lama dari baris 8 sampai max_row
+                # (Mengosongkan isi tanpa menghapus baris agar style/template tidak rusak)
+                max_r = max(ws.max_row, 8 + len(df_raw))
+                for r in range(8, max_r + 1):
+                    for c in range(1, 35):
+                        cell = ws.cell(row=r, column=c)
+                        if type(cell).__name__ != "MergedCell":
+                            cell.value = None
 
                 # Populasi Data Mentah Baru
                 for idx, row_data in df_raw.iterrows():
