@@ -128,8 +128,18 @@ st.divider()
 st.header("3. Eksekusi & Pemrosesan")
 
 
+def clean_batch_str(val):
+    """Pembersih penulisan string Batch agar match 100%."""
+    if pd.isna(val) or val is None:
+        return ""
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
 def load_raw_inventory_data(uploaded_file_obj):
-    """Membaca file data mentah inventory secara fleksibel."""
+    """Membaca file data mentah inventory & melakukan sorting lokasi/BIN."""
     fname = uploaded_file_obj.name.lower()
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
         df = pd.read_excel(uploaded_file_obj)
@@ -144,6 +154,16 @@ def load_raw_inventory_data(uploaded_file_obj):
             df = pd.read_csv(uploaded_file_obj, sep=",")
 
     df.columns = df.columns.astype(str).str.strip().str.upper()
+
+    # --- FITUR SORTING ---
+    sort_cols = []
+    for col in ["LOCATION", "LOC", "BIN", "PART NO", "PN", "BATCH", "BATCH NO"]:
+        if col in df.columns and col not in sort_cols:
+            sort_cols.append(col)
+    
+    if sort_cols:
+        df = df.sort_values(by=sort_cols, ascending=True).reset_index(drop=True)
+
     return df
 
 
@@ -170,18 +190,18 @@ def set_cell_safe(ws, row, col, value):
 
 
 def build_prev_so_dict(prev_so_file_obj):
-    """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO + Status secara presisi."""
+    """Pindai otomatis header Prev SO, toleran terhadap variasi nama kolom."""
     try:
         df_raw = pd.read_excel(prev_so_file_obj, sheet_name="Worksheet", header=None)
     except Exception:
         prev_so_file_obj.seek(0)
         df_raw = pd.read_excel(prev_so_file_obj, header=None)
 
-    # Search baris header mana yang mengandung 'BATCH'
+    # Deteksi baris header secara fleksibel
     header_idx = None
     for idx, r in df_raw.iterrows():
         row_str_vals = [str(v).strip().upper() for v in r.values if pd.notna(v)]
-        if "BATCH" in row_str_vals and ("RESULT" in row_str_vals or "STATUS" in row_str_vals or "PREV SO" in row_str_vals):
+        if "BATCH" in row_str_vals:
             header_idx = idx
             break
 
@@ -196,26 +216,22 @@ def build_prev_so_dict(prev_so_file_obj):
 
         df_prev.columns = [str(c).strip().upper() for c in df_prev.columns]
 
-        for _, row in df_prev.iterrows():
-            batch_val = row.get("BATCH")
-            if pd.notna(batch_val) and str(batch_val).strip() != "":
-                batch_key = str(batch_val).strip()
-                if batch_key.endswith(".0"):
-                    batch_key = batch_key[:-2]
+        # Identifikasi kolom target untuk Prev SO & Prev Status
+        batch_col = next((c for c in df_prev.columns if "BATCH" in c), None)
+        so_col = next((c for c in df_prev.columns if any(k in c for k in ["RESULT", "PREV SO", "SO", "RESULT PREV"])), None)
+        status_col = next((c for c in df_prev.columns if any(k in c for k in ["STATUS", "PREV STATUS", "STATUS PREV"])), None)
 
-                # --- PENYESUAIAN REVISI PLACEMENT ---
-                # Prev SO diisi dari kolom STATUS / RESULT pada file Prev SO
-                # Prev Status diisi dari kolom PREV STATUS / CORRECTIVE ACTION pada file Prev SO
-                res_val = row.get("STATUS") if pd.notna(row.get("STATUS")) else row.get("RESULT")
-                if pd.isna(res_val):
-                    res_val = row.get("PREV SO") if pd.notna(row.get("PREV SO")) else None
+        if batch_col:
+            for _, row in df_prev.iterrows():
+                batch_key = clean_batch_str(row.get(batch_col))
+                if batch_key:
+                    res_val = row.get(so_col) if so_col and pd.notna(row.get(so_col)) else None
+                    stat_val = row.get(status_col) if status_col and pd.notna(row.get(status_col)) else None
 
-                stat_val = row.get("PREV STATUS") if pd.notna(row.get("PREV STATUS")) else row.get("CORRECTIVE ACTION")
-
-                prev_dict[batch_key] = {
-                    "prev_so": res_val,
-                    "prev_status": stat_val,
-                }
+                    prev_dict[batch_key] = {
+                        "prev_so": res_val,
+                        "prev_status": stat_val,
+                    }
     return prev_dict
 
 
@@ -232,19 +248,6 @@ if st.button("🚀 Process & Generate Template", type="primary"):
             for sname in ["Sheet1", "Sheet2", "sheet1", "sheet2"]:
                 if sname in wb.sheetnames:
                     del wb[sname]
-
-            # -----------------------------------------------------
-            # SORTING DATA MENTAH (LOC -> BIN -> PN -> SN) A-Z
-            # -----------------------------------------------------
-            # Cari kolom untuk sorting
-            loc_col = next((c for c in df_raw.columns if c in ["LOCATION", "LOC"]), None)
-            bin_col = next((c for c in df_raw.columns if c == "BIN"), None)
-            pn_col = next((c for c in df_raw.columns if c in ["PN", "PART NO", "PART_NO"]), None)
-            sn_col = next((c for c in df_raw.columns if c in ["SN", "SERIAL NO", "SERIAL_NO"]), None)
-
-            sort_keys = [c for c in [loc_col, bin_col, pn_col, sn_col] if c is not None]
-            if sort_keys:
-                df_raw = df_raw.sort_values(by=sort_keys, ascending=True).reset_index(drop=True)
 
             # -----------------------------------------------------
             # UPDATE SHEET WORKSHEET
@@ -267,9 +270,7 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     row_idx = 8 + idx
 
                     raw_batch = get_val(row_data, "BATCH", "BATCH NO", "BATCH_NO", default="")
-                    batch_num = str(raw_batch).strip()
-                    if batch_num.endswith(".0"):
-                        batch_num = batch_num[:-2]
+                    batch_num = clean_batch_str(raw_batch)
 
                     set_cell_safe(ws, row_idx, 1, idx + 1)  # A: No
                     set_cell_safe(ws, row_idx, 2, get_val(row_data, "COUNT NO", "COUNT_NO", default=""))  # B: Count No
@@ -298,8 +299,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     # --- FORMULA EXCEL DINAMIS ---
                     set_cell_safe(ws, row_idx, 21, f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}")  # U: Qty eMRO
                     
-                    # QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG)
-                    set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual (BLANK)
+                    # QTY ACTUAL (KOLOM V) DI-BLANK-KAN UNTUK PENGISIAN MANUAL AUDITOR
+                    set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual
                     
                     set_cell_safe(ws, row_idx, 23, f"=V{row_idx}-U{row_idx}")  # W: Diff
                     set_cell_safe(ws, row_idx, 24, f'=IF(U{row_idx}=0,"BUG EMRO??/MISSING??",IF(V{row_idx}=0,"NOT FOUND",IF(V{row_idx}>U{row_idx},"SURPLUS",IF(V{row_idx}<U{row_idx},"MINUS","MATCHED"))))')  # X: Result
