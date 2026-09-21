@@ -129,7 +129,7 @@ st.header("3. Eksekusi & Pemrosesan")
 
 
 def load_raw_inventory_data(uploaded_file_obj):
-    """Membaca file data mentah inventory & mengurutkannya A-Z (LOC -> BIN -> PN -> SN)."""
+    """Membaca file data mentah inventory secara fleksibel."""
     fname = uploaded_file_obj.name.lower()
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
         df = pd.read_excel(uploaded_file_obj)
@@ -144,16 +144,6 @@ def load_raw_inventory_data(uploaded_file_obj):
             df = pd.read_csv(uploaded_file_obj, sep=",")
 
     df.columns = df.columns.astype(str).str.strip().str.upper()
-
-    # --- PENAMBAHAN FITUR SORTING A-Z (LOC -> BIN -> PN -> SN) ---
-    sort_cols = []
-    for col in ["LOCATION", "LOC", "BIN", "PN", "PART NO", "PART_NO", "SN", "SERIAL NO", "SERIAL_NO"]:
-        if col in df.columns and col not in sort_cols:
-            sort_cols.append(col)
-    
-    if sort_cols:
-        df = df.sort_values(by=sort_cols, ascending=True).reset_index(drop=True)
-
     return df
 
 
