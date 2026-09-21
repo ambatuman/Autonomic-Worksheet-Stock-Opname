@@ -26,7 +26,7 @@ with col1:
     template_file = st.file_uploader(
         "Upload Template Master (.xlsx)",
         type=["xlsx"],
-        help="Dokumen master/template yang berisi sheet Worksheet, Summary, dll.",
+        help="Template SO download di : https://intip.in/TemplateSO",
     )
 
 with col2:
