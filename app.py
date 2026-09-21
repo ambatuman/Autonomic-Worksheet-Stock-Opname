@@ -1,5 +1,4 @@
 import io
-import csv
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -129,49 +128,26 @@ st.divider()
 st.header("3. Eksekusi & Pemrosesan")
 
 
-def clean_batch_str(val):
-    """Pembersih penulisan string Batch agar match 100%."""
-    if pd.isna(val) or val is None:
-        return ""
-    s = str(val).strip()
-    if s.endswith(".0"):
-        s = s[:-2]
-    return s
-
-
 def load_raw_inventory_data(uploaded_file_obj):
-    """Membaca file data mentah inventory & melakukan sorting lokasi/BIN."""
+    """Membaca file data mentah inventory & mengurutkannya A-Z (LOC -> BIN -> PN -> SN)."""
     fname = uploaded_file_obj.name.lower()
-    df = None
-
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
-        try:
-            df = pd.read_excel(uploaded_file_obj)
-            # Menangani kondisi CSV dengan separator ';' yang disimpan sebagai file .xlsx
-            if df.shape[1] <= 2:
-                uploaded_file_obj.seek(0)
-                df_temp = pd.read_excel(uploaded_file_obj)
-                non_null_series = df_temp.dropna(how='all').iloc[:, 0].astype(str)
-                text_data = "\n".join(non_null_series)
-                df = pd.read_csv(io.StringIO(text_data), sep=";", quoting=csv.QUOTE_MINIMAL, on_bad_lines='skip')
-        except Exception:
-            uploaded_file_obj.seek(0)
-            df = pd.read_excel(uploaded_file_obj)
+        df = pd.read_excel(uploaded_file_obj)
     else:
         try:
-            df = pd.read_csv(uploaded_file_obj, sep=";", on_bad_lines='skip')
+            df = pd.read_csv(uploaded_file_obj, sep=";")
             if df.shape[1] <= 1:
                 uploaded_file_obj.seek(0)
-                df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
+                df = pd.read_csv(uploaded_file_obj, sep=",")
         except Exception:
             uploaded_file_obj.seek(0)
-            df = pd.read_csv(uploaded_file_obj, sep=",", on_bad_lines='skip')
+            df = pd.read_csv(uploaded_file_obj, sep=",")
 
     df.columns = df.columns.astype(str).str.strip().str.upper()
 
-    # --- FITUR SORTING (LOC -> BIN -> PN -> SN -> BATCH) A-Z ---
+    # --- PENAMBAHAN FITUR SORTING A-Z (LOC -> BIN -> PN -> SN) ---
     sort_cols = []
-    for col in ["LOCATION", "LOC", "BIN", "PART NO", "PN", "SERIAL NO", "SN", "BATCH", "BATCH NO"]:
+    for col in ["LOCATION", "LOC", "BIN", "PN", "PART NO", "PART_NO", "SN", "SERIAL NO", "SERIAL_NO"]:
         if col in df.columns and col not in sort_cols:
             sort_cols.append(col)
     
@@ -204,17 +180,19 @@ def set_cell_safe(ws, row, col, value):
 
 
 def build_prev_so_dict(prev_so_file_obj):
-    """Pindai otomatis header Prev SO, toleran terhadap variasi nama kolom."""
+    """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO + Status secara presisi."""
     try:
+        # Gunakan Pandas sebagai engine pembaca agar tahan dari corrupt XML openpyxl
         df_raw = pd.read_excel(prev_so_file_obj, sheet_name="Worksheet", header=None)
     except Exception:
         prev_so_file_obj.seek(0)
         df_raw = pd.read_excel(prev_so_file_obj, header=None)
 
+    # Search baris header mana yang mengandung 'BATCH'
     header_idx = None
     for idx, r in df_raw.iterrows():
         row_str_vals = [str(v).strip().upper() for v in r.values if pd.notna(v)]
-        if "BATCH" in row_str_vals:
+        if "BATCH" in row_str_vals and ("RESULT" in row_str_vals or "STATUS" in row_str_vals):
             header_idx = idx
             break
 
@@ -229,21 +207,20 @@ def build_prev_so_dict(prev_so_file_obj):
 
         df_prev.columns = [str(c).strip().upper() for c in df_prev.columns]
 
-        batch_col = next((c for c in df_prev.columns if "BATCH" in c), None)
-        so_col = next((c for c in df_prev.columns if any(k in c for k in ["RESULT", "PREV SO", "SO", "RESULT PREV"])), None)
-        status_col = next((c for c in df_prev.columns if any(k in c for k in ["STATUS", "PREV STATUS", "STATUS PREV", "CORRECTIVE ACTION"])), None)
+        for _, row in df_prev.iterrows():
+            batch_val = row.get("BATCH")
+            if pd.notna(batch_val) and str(batch_val).strip() != "":
+                batch_key = str(batch_val).strip()
+                if batch_key.endswith(".0"):
+                    batch_key = batch_key[:-2]
 
-        if batch_col:
-            for _, row in df_prev.iterrows():
-                batch_key = clean_batch_str(row.get(batch_col))
-                if batch_key:
-                    res_val = row.get(so_col) if so_col and pd.notna(row.get(so_col)) else None
-                    stat_val = row.get(status_col) if status_col and pd.notna(row.get(status_col)) else None
+                res_val = row.get("RESULT") if pd.notna(row.get("RESULT")) else None
+                stat_val = row.get("STATUS") if pd.notna(row.get("STATUS")) else None
 
-                    prev_dict[batch_key] = {
-                        "prev_so": res_val,
-                        "prev_status": stat_val,
-                    }
+                prev_dict[batch_key] = {
+                    "prev_so": res_val,
+                    "prev_status": stat_val,
+                }
     return prev_dict
 
 
@@ -272,21 +249,19 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                 set_cell_safe(ws, 4, 3, f": {location_input}")
                 set_cell_safe(ws, 5, 3, f": {periode_input}")
 
-                # Bersihkan nilai baris lama dari baris 8 sampai max_row
-                # (Mengosongkan isi tanpa menghapus baris agar style/template tidak rusak)
-                max_r = max(ws.max_row, 8 + len(df_raw))
-                for r in range(8, max_r + 1):
-                    for c in range(1, 35):
-                        cell = ws.cell(row=r, column=c)
-                        if type(cell).__name__ != "MergedCell":
-                            cell.value = None
+                # Hapus isi baris lama dari baris 8 ke bawah
+                max_r = ws.max_row
+                if max_r >= 8:
+                    ws.delete_rows(8, amount=max_r - 7 + 1)
 
                 # Populasi Data Mentah Baru
                 for idx, row_data in df_raw.iterrows():
                     row_idx = 8 + idx
 
                     raw_batch = get_val(row_data, "BATCH", "BATCH NO", "BATCH_NO", default="")
-                    batch_num = clean_batch_str(raw_batch)
+                    batch_num = str(raw_batch).strip()
+                    if batch_num.endswith(".0"):
+                        batch_num = batch_num[:-2]
 
                     set_cell_safe(ws, row_idx, 1, idx + 1)  # A: No
                     set_cell_safe(ws, row_idx, 2, get_val(row_data, "COUNT NO", "COUNT_NO", default=""))  # B: Count No
@@ -315,8 +290,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     # --- FORMULA EXCEL DINAMIS ---
                     set_cell_safe(ws, row_idx, 21, f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}")  # U: Qty eMRO
                     
-                    # QTY ACTUAL (KOLOM V) DI-BLANK-KAN UNTUK PENGISIAN MANUAL AUDITOR
-                    set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual
+                    # ⚠️ QTY ACTUAL (KOLOM V) DI-BLANK-KAN (KOSONG) SESUAI REQUEST
+                    set_cell_safe(ws, row_idx, 22, None)  # V: Qty Actual (BLANK)
                     
                     set_cell_safe(ws, row_idx, 23, f"=V{row_idx}-U{row_idx}")  # W: Diff
                     set_cell_safe(ws, row_idx, 24, f'=IF(U{row_idx}=0,"BUG EMRO??/MISSING??",IF(V{row_idx}=0,"NOT FOUND",IF(V{row_idx}>U{row_idx},"SURPLUS",IF(V{row_idx}<U{row_idx},"MINUS","MATCHED"))))')  # X: Result
