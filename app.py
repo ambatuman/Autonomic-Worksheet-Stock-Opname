@@ -51,14 +51,14 @@ st.header("2. Input Informasi Metadata & Summary")
 
 col_m1, col_m2, col_m3 = st.columns(3)
 with col_m1:
-    station_input = st.text_input("Station (Cell C3)", value="KNO")
+    station_input = st.text_input("Station (Cell C3 / D3)", value="BRJ")
 with col_m2:
     location_input = st.text_input(
-        "Location (Cell C4)", value="K7, K65 & K42"
+        "Location (Cell C4)", value="BL04"
     )
 with col_m3:
     periode_input = st.text_input(
-        "Periode Date (Cell C5)", value="02 - 05 Juni 2026"
+        "Periode Date (Cell C5 / D4)", value="17 - 18 SEPTEMBER 2026"
     )
 
 st.subheader("Pengaturan Sheet Summary (Dinamis Per Lokasi)")
@@ -71,15 +71,9 @@ if "summary_rows" not in st.session_state:
         {
             "division": "LINE MAINTENANCE",
             "pic": "THOMAS",
-            "loc_code": "K7",
-            "loc_desc": "TOOLROOM KNO",
-        },
-        {
-            "division": "LINE MAINTENANCE",
-            "pic": "RAFI",
-            "loc_code": "K65",
-            "loc_desc": "STORE KNO",
-        },
+            "loc_code": "BL04",
+            "loc_desc": "STORE BRJ",
+        }
     ]
 
 # Tombol Tambah / Hapus Lokasi
@@ -135,7 +129,7 @@ st.header("3. Eksekusi & Pemrosesan")
 
 
 def load_raw_inventory_data(uploaded_file_obj):
-    """Membaca file data mentah baik berupa Excel (.xlsx/.xls) maupun CSV (pembatas ; atau ,)."""
+    """Membaca file data mentah baik berupa Excel (.xlsx/.xls) maupun CSV."""
     fname = uploaded_file_obj.name.lower()
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
         df = pd.read_excel(uploaded_file_obj)
@@ -155,14 +149,25 @@ def load_raw_inventory_data(uploaded_file_obj):
 
 
 def get_val(row, *possible_keys, default=None):
-    """Helper untuk mengambil data secara Case-Insensitive & fleksibel dari dictionary baris."""
+    """Helper untuk mengambil data secara Case-Insensitive dari dictionary baris."""
     for key in possible_keys:
         k_upper = key.strip().upper()
         if k_upper in row and pd.notna(row[k_upper]):
-            val = row[k_upper]
-            # Jika numerik, coba kembalikan int/float, bukan NaN
-            return val
+            return row[k_upper]
     return default
+
+
+def set_cell_safe(ws, row, col, value):
+    """Mengisi sel tanpa merusak/error jika menimpa MergedCell."""
+    cell = ws.cell(row=row, column=col)
+    if type(cell).__name__ == "MergedCell":
+        # Jika sel bagian dari merged range, cari sel utama di pojok kiri atas
+        for merged_range in ws.merged_cells.ranges:
+            if cell.coordinate in merged_range:
+                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+                break
+    else:
+        cell.value = value
 
 
 def build_prev_so_dict(prev_so_file_obj):
@@ -176,7 +181,6 @@ def build_prev_so_dict(prev_so_file_obj):
         batch_col, result_col, status_col = None, None, None
         header_row = 7
 
-        # Mencari letak header 'Batch', 'Result', 'Status' di sheet Prev SO
         for r in range(1, 10):
             for c in range(1, 40):
                 val = str(ws_prev.cell(r, c).value or "").strip().lower()
@@ -229,14 +233,16 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                 if sname in wb.sheetnames:
                     del wb[sname]
 
-            # Update Sheet Worksheet
+            # -----------------------------------------------------
+            # UPDATE SHEET WORKSHEET
+            # -----------------------------------------------------
             if "Worksheet" in wb.sheetnames:
                 ws = wb["Worksheet"]
 
                 # Update Metadata
-                ws["C3"] = f": {station_input}"
-                ws["C4"] = f": {location_input}"
-                ws["C5"] = f": {periode_input}"
+                set_cell_safe(ws, 3, 3, f": {station_input}")
+                set_cell_safe(ws, 4, 3, f": {location_input}")
+                set_cell_safe(ws, 5, 3, f": {periode_input}")
 
                 # Hapus data lama mulai baris 8 ke bawah
                 max_r = ws.max_row
@@ -253,41 +259,47 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                         )
                     ).strip()
 
-                    ws.cell(row_idx, 1, idx + 1)  # A: No
-                    ws.cell(
+                    set_cell_safe(ws, row_idx, 1, idx + 1)  # A: No
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         2,
                         get_val(row_data, "COUNT NO", "COUNT_NO", default=""),
                     )  # B: Count No
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         3,
                         get_val(row_data, "LOCATION", "LOC", default=""),
                     )  # C: LOC
-                    ws.cell(
-                        row_idx, 4, get_val(row_data, "BIN", default="")
+                    set_cell_safe(
+                        ws, row_idx, 4, get_val(row_data, "BIN", default="")
                     )  # D: BIN
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         5,
                         get_val(row_data, "GRB", "GRB NO", "GRB_NO", default=""),
                     )  # E: GRB
-                    ws.cell(row_idx, 6, batch_num)  # F: Batch
-                    ws.cell(
+                    set_cell_safe(ws, row_idx, 6, batch_num)  # F: Batch
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         7,
                         get_val(
                             row_data, "PN", "PART NO", "PART_NO", default=""
                         ),
                     )  # G: PN
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         8,
                         get_val(
                             row_data, "SN", "SERIAL NO", "SERIAL_NO", default=""
                         ),
                     )  # H: SN
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         9,
                         get_val(
@@ -300,7 +312,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                     )  # I: PN Description
 
                     # QTY Columns (10-15)
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         10,
                         get_val(
@@ -311,7 +324,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                             default=0,
                         ),
                     )  # J
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         11,
                         get_val(
@@ -322,7 +336,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                             default=0,
                         ),
                     )  # K
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         12,
                         get_val(
@@ -333,7 +348,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                             default=0,
                         ),
                     )  # L
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         13,
                         get_val(
@@ -344,12 +360,14 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                             default=0,
                         ),
                     )  # M
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         14,
                         get_val(row_data, "QTY US", "QTY_US", default=0),
                     )  # N
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         15,
                         get_val(
@@ -361,7 +379,8 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                         ),
                     )  # O
 
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         16,
                         get_val(
@@ -372,82 +391,104 @@ if st.button("🚀 Process & Generate Template", type="primary"):
                             default="",
                         ),
                     )  # P: Shelf Life Exp
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         17,
                         get_val(row_data, "CONDITION", default="SV"),
                     )  # Q: Condition
-                    ws.cell(
-                        row_idx, 18, get_val(row_data, "CATEGORY", default="")
+                    set_cell_safe(
+                        ws,
+                        row_idx,
+                        18,
+                        get_val(row_data, "CATEGORY", default=""),
                     )  # R: Category
-                    ws.cell(
-                        row_idx, 19, get_val(row_data, "OWNER", default="")
+                    set_cell_safe(
+                        ws,
+                        row_idx,
+                        19,
+                        get_val(row_data, "OWNER", default=""),
                     )  # S: Owner
-                    ws.cell(
-                        row_idx, 20, get_val(row_data, "UOM", default="EA")
+                    set_cell_safe(
+                        ws,
+                        row_idx,
+                        20,
+                        get_val(row_data, "UOM", default="EA"),
                     )  # T: UOM
 
                     # --- FORMULA EXCEL DINAMIS ---
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         21,
                         f"=J{row_idx}+K{row_idx}+M{row_idx}+N{row_idx}",
                     )  # U: Qty eMRO
-                    ws.cell(row_idx, 22, f"=U{row_idx}")  # V: Qty Actual
-                    ws.cell(
-                        row_idx, 23, f"=V{row_idx}-U{row_idx}"
+                    set_cell_safe(ws, row_idx, 22, f"=U{row_idx}")  # V: Qty Actual
+                    set_cell_safe(
+                        ws, row_idx, 23, f"=V{row_idx}-U{row_idx}"
                     )  # W: Diff
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         24,
                         f'=IF(U{row_idx}=0,"BUG EMRO??/MISSING??",IF(V{row_idx}=0,"NOT FOUND",IF(V{row_idx}>U{row_idx},"SURPLUS",IF(V{row_idx}<U{row_idx},"MINUS","MATCHED"))))',
                     )  # X: Result
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         25,
                         f'=IF(X{row_idx}="MATCHED","MATCHED","OPEN")',
                     )  # Y: Status
 
                     # Dikosongkan
-                    ws.cell(row_idx, 26, None)  # Z: Date
-                    ws.cell(row_idx, 27, None)  # AA: Auditor
-                    ws.cell(row_idx, 28, None)  # AB: Remark
-                    ws.cell(row_idx, 29, None)  # AC: Penyelesaian
-                    ws.cell(row_idx, 30, None)  # AD: Corrective Action
+                    set_cell_safe(ws, row_idx, 26, None)  # Z: Date
+                    set_cell_safe(ws, row_idx, 27, None)  # AA: Auditor
+                    set_cell_safe(ws, row_idx, 28, None)  # AB: Remark
+                    set_cell_safe(ws, row_idx, 29, None)  # AC: Penyelesaian
+                    set_cell_safe(ws, row_idx, 30, None)  # AD: Corrective Action
 
                     # --- PENUKARAN KOLOM PREV SO & PREV STATUS ---
                     prev_info = prev_so_map.get(
                         batch_num, {"prev_so": None, "prev_status": None}
                     )
-                    ws.cell(
-                        row_idx, 31, prev_info["prev_so"]
+                    set_cell_safe(
+                        ws, row_idx, 31, prev_info["prev_so"]
                     )  # AE: Prev SO
-                    ws.cell(
+                    set_cell_safe(
+                        ws,
                         row_idx,
                         32,
                         get_val(row_data, "CAT", "CATEGORY", default=""),
                     )  # AF: CAT
-                    ws.cell(
-                        row_idx, 33, prev_info["prev_status"]
+                    set_cell_safe(
+                        ws, row_idx, 33, prev_info["prev_status"]
                     )  # AG: Prev Status
-                    ws.cell(row_idx, 34, None)  # AH: Reason (Dikosongkan)
+                    set_cell_safe(ws, row_idx, 34, None)  # AH: Reason
 
-            # Update Sheet Summary
+            # -----------------------------------------------------
+            # UPDATE SHEET SUMMARY
+            # -----------------------------------------------------
             if "Summary" in wb.sheetnames:
                 ws_sum = wb["Summary"]
-                ws_sum["D2"] = f": {station_input}"
-                ws_sum["D3"] = f": {periode_input}"
+                set_cell_safe(ws_sum, 3, 4, f": {station_input}")  # D3
+                set_cell_safe(ws_sum, 4, 4, f": {periode_input}")  # D4
 
-                start_sum_row = 9
+                start_sum_row = 11  # Data Summary dimulai di baris 11
                 for i, sdata in enumerate(summary_data_inputs):
                     r_curr = start_sum_row + i
-                    ws_sum.cell(r_curr, 2, i + 1)
-                    ws_sum.cell(r_curr, 3, sdata["division"])
-                    ws_sum.cell(r_curr, 4, sdata["pic"])
-                    ws_sum.cell(r_curr, 5, sdata["loc_code"])
-                    ws_sum.cell(r_curr, 6, sdata["loc_desc"])
+                    set_cell_safe(ws_sum, r_curr, 2, i + 1)  # B: NO
+                    set_cell_safe(
+                        ws_sum, r_curr, 3, sdata["division"]
+                    )  # C: DIVISION
+                    set_cell_safe(ws_sum, r_curr, 4, sdata["pic"])  # D: PIC
+                    set_cell_safe(
+                        ws_sum, r_curr, 5, sdata["loc_code"]
+                    )  # E: LOC CODE
+                    set_cell_safe(
+                        ws_sum, r_curr, 6, sdata["loc_desc"]
+                    )  # F: LOCATION DESCRIPTION
 
-            # Save ke memory buffer untuk didownload
+            # Save ke memory buffer
             output_buffer = io.BytesIO()
             wb.save(output_buffer)
             output_buffer.seek(0)
