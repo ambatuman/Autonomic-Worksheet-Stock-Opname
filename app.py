@@ -2,6 +2,7 @@ import io
 import csv
 import openpyxl
 import pandas as pd
+import requests
 import streamlit as st
 
 st.set_page_config(
@@ -16,27 +17,34 @@ st.write(
 st.divider()
 
 # ---------------------------------------------------------
+# DIRECT LINK TEMPLATE MASTER GOOGLE DRIVE
+# ---------------------------------------------------------
+TEMPLATE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=16a4z69o0IGjmOZb_sP3HDG2m2WQnYxJI"
+
+
+@st.cache_data
+def fetch_master_template():
+    """Mengunduh template master dari Google Drive dan menyimpannya di cache Streamlit."""
+    response = requests.get(TEMPLATE_DRIVE_URL)
+    response.raise_for_status()
+    return io.BytesIO(response.content)
+
+
+# ---------------------------------------------------------
 # STEP 1: UPLOAD DOKUMEN
 # ---------------------------------------------------------
 st.header("1. Upload Dokumen")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    template_file = st.file_uploader(
-        "Upload Template Master (.xlsx)",
-        type=["xlsx"],
-        help="Template SO download di : https://intip.in/TemplateSO",
-    )
-
-with col2:
     csv_file = st.file_uploader(
         "Upload Data Mentah Inventory (.csv / .xlsx)",
         type=["csv", "xlsx", "xls"],
         help="Report inventory baru (bisa format CSV atau Excel).",
     )
 
-with col3:
+with col2:
     prev_so_file = st.file_uploader(
         "Upload Dokumen Prev SO Referensi (.xlsx)",
         type=["xlsx"],
@@ -137,7 +145,6 @@ def load_raw_inventory_data(uploaded_file_obj):
     if fname.endswith(".xlsx") or fname.endswith(".xls"):
         try:
             df = pd.read_excel(uploaded_file_obj)
-            # CEK: Jika Excel hanya berisi 1-2 kolom gabungan teks bercampur titik koma (;)
             if df.shape[1] <= 2:
                 uploaded_file_obj.seek(0)
                 df_temp = pd.read_excel(uploaded_file_obj)
@@ -194,14 +201,13 @@ def set_cell_safe(ws, row, col, value):
 
 
 def build_prev_so_dict(prev_so_file_obj):
-    """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO + Status secara presisi."""
+    """Pindai secara otomatis baris header & ekstraksi VLOOKUP Prev SO & Status secara presisi."""
     try:
         df_raw = pd.read_excel(prev_so_file_obj, sheet_name="Worksheet", header=None)
     except Exception:
         prev_so_file_obj.seek(0)
         df_raw = pd.read_excel(prev_so_file_obj, header=None)
 
-    # Search baris header mana yang mengandung 'BATCH'
     header_idx = None
     for idx, r in df_raw.iterrows():
         row_str_vals = [str(v).strip().upper() for v in r.values if pd.notna(v)]
@@ -238,11 +244,17 @@ def build_prev_so_dict(prev_so_file_obj):
 
 
 if st.button("🚀 Process & Generate Template", type="primary"):
-    if not template_file or not csv_file or not prev_so_file:
-        st.error("⚠️ Harap upload KETIGA dokumen terlebih dahulu!")
+    if not csv_file or not prev_so_file:
+        st.error("⚠️ Harap upload KEDUA dokumen terlebih dahulu!")
     else:
-        with st.spinner("Sedang memproses data dan merapikan Excel..."):
-            wb = openpyxl.load_workbook(template_file)
+        with st.spinner("Mengunduh template master & memproses data..."):
+            try:
+                template_bytes = fetch_master_template()
+                wb = openpyxl.load_workbook(template_bytes)
+            except Exception as e:
+                st.error(f"❌ Gagal mengambil Template Master dari Google Drive: {e}")
+                st.stop()
+
             df_raw = load_raw_inventory_data(csv_file)
             prev_so_map = build_prev_so_dict(prev_so_file)
 
